@@ -1,0 +1,12 @@
+[package]
+name = "kanto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+affinity = "0.1.2"
+anyhow = "1.0.93"
+axum = "0.7.9"
+serde = { version = "1.0.215", features = ["derive"] }
+thread-priority = "1.2.0"
+tokio = { version = "1", features = ["full"] }
