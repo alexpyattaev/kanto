@@ -80,20 +80,7 @@ impl Default for TokioConfig {
         }
     }
 }
-pub fn assign_core(core_alloc: CoreAllocation, priority: usize) {
-    let tid = std::thread::current()
-        .get_native_id()
-        .expect("Can not get thread id for newly created thread");
-    println!("thread id {tid} started");
-    let priority = std::thread::current()
-        .get_priority()
-        .expect("Can not get priority");
-    println!("current priority is {priority:?}");
-    println!(
-        "\tCurrent thread affinity : {:?}",
-        get_thread_affinity().unwrap()
-    );
-}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NativeConfig {
     pub max_threads: usize,
@@ -151,12 +138,14 @@ impl RuntimeManager {
             let base_name = name.clone();
             builder
                 .on_thread_start(move || {
-                    let _lg = DBG_LOCK.lock();
                     println!("==================");
-                    let tid = std::thread::current()
+                    let _lg = DBG_LOCK.lock();
+                    let cur_thread = std::thread::current();
+                    let tid = cur_thread
                         .get_native_id()
                         .expect("Can not get thread id for newly created thread");
-                    println!("thread id {tid} started for runtime {base_name}");
+                    let tname = cur_thread.name().unwrap();
+                    println!("thread {tname} id {tid} started");
                     let priority = std::thread::current()
                         .get_priority()
                         .expect("Can not get priority");
@@ -184,6 +173,7 @@ impl RuntimeManager {
 mod tests {
     use std::{
         collections::HashMap,
+        io::Write,
         net::{IpAddr, Ipv4Addr, SocketAddr},
     };
 
@@ -245,7 +235,28 @@ mod tests {
             dbg!(&rtm.tokio_runtime_mapping);
             dbg!(&rtm.tokio_runtimes);
         }
-        let tok1 = rtm.get_tokio("axum2").unwrap();
+        let tok1 = rtm.get_tokio("axum1").unwrap();
         tok1.start(axum_main(8888));
+    }
+
+    fn run_wrk(ports: Vec<u16>) -> anyhow::Result<()> {
+        let mut children: Vec<_> = ports
+            .iter()
+            .map(|p| {
+                std::process::Command::new("wrk")
+                    .arg(format!("http://localhost:{}", p))
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+
+        let outs = children.drain(..).map(|c| c.wait_with_output().unwrap());
+        for out in outs {
+            std::io::stdout().write_all(&out.stderr)?;
+            std::io::stdout().write_all(&out.stdout)?;
+        }
+        Ok(())
     }
 }
