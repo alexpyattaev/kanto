@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::thread::Thread;
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TokioConfig {
     pub worker_threads: usize,
     pub max_blocking_threads: usize,
@@ -25,7 +26,8 @@ impl Default for TokioConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NativeConfig {
     pub max_threads: usize,
     pub priority: usize,
@@ -60,6 +62,18 @@ impl TokioRuntime {
         F: Future,
     {
         //assign_core(self.config.core_allocation, self.config.priority);
+        /*match self.config.core_allocation {
+            CoreAllocation::PinnedCores { min: _, max: _ } => {
+                todo!("NEed to store pinning mask somewhere");
+            }
+            CoreAllocation::DedicatedCoreSet { min, max } => {
+                let mask: Vec<_> = (min..max).collect();
+                println!("Constraining tokio main thread  to {:?}", &mask);
+                affinity::set_thread_affinity(&mask)
+                    .expect("Can not set thread affinity for runtime main thread");
+            }
+            CoreAllocation::OsDefault => {}
+        }*/
         self.tokio.block_on(fut)
     }
 }
