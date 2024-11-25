@@ -64,6 +64,10 @@ impl RuntimeManager {
             core_allocations.insert(name.clone().into_boxed_str(), chosen_cores_mask.clone());
 
             let base_name = name.clone();
+            println!(
+                "Assigning {:?} to runtime {}",
+                &core_allocations, &base_name
+            );
             let mut builder = match num_workers {
                 1 => tokio::runtime::Builder::new_current_thread(),
 
@@ -73,11 +77,11 @@ impl RuntimeManager {
                     builder
                 }
             };
+            let atomic_id: AtomicUsize = AtomicUsize::new(0);
             builder
                 .event_interval(cfg.event_interval)
                 .thread_name_fn(move || {
-                    static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
-                    let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+                    let id = atomic_id.fetch_add(1, Ordering::SeqCst);
                     format!("{}-{}", base_name, id)
                 })
                 .thread_stack_size(cfg.stack_size_bytes)
@@ -100,11 +104,11 @@ impl RuntimeManager {
                 let priority = std::thread::current()
                     .get_priority()
                     .expect("Can not get priority");
-                println!("current priority is {priority:?}");
-                println!(
-                    "\tCurrent thread affinity : {:?}",
-                    get_thread_affinity().unwrap()
-                );
+                //println!("current priority is {priority:?}");
+                //println!(
+                //    "\tCurrent thread affinity : {:?}",
+                //    get_thread_affinity().unwrap()
+                //);
 
                 match c.core_allocation {
                     CoreAllocation::PinnedCores { min: _, max: _ } => {
@@ -187,13 +191,21 @@ mod tests {
             );
             println!("\tTotal cores : {}", get_core_num());
         }
-        let mut tokio_cfg_1 = TokioConfig::default();
-        tokio_cfg_1.core_allocation = CoreAllocation::DedicatedCoreSet { min: 0, max: 2 };
-        tokio_cfg_1.worker_threads = 2;
-        let mut tokio_cfg_2 = TokioConfig::default();
-        tokio_cfg_2.core_allocation = CoreAllocation::DedicatedCoreSet { min: 2, max: 4 };
-        tokio_cfg_2.worker_threads = 2;
 
+        let mut tokio_cfg_1 = TokioConfig::default();
+        tokio_cfg_1.core_allocation = CoreAllocation::DedicatedCoreSet { min: 0, max: 4 };
+        tokio_cfg_1.worker_threads = 4;
+        let mut tokio_cfg_2 = TokioConfig::default();
+        tokio_cfg_2.core_allocation = CoreAllocation::DedicatedCoreSet { min: 4, max: 8 };
+        tokio_cfg_2.worker_threads = 5;
+        /*
+        let mut tokio_cfg_1 = TokioConfig::default();
+        tokio_cfg_1.core_allocation = CoreAllocation::DedicatedCoreSet { min: 0, max: 8 };
+        tokio_cfg_1.worker_threads = 8;
+        let mut tokio_cfg_2 = TokioConfig::default();
+        tokio_cfg_2.core_allocation = CoreAllocation::DedicatedCoreSet { min: 0, max: 8 };
+        tokio_cfg_2.worker_threads = 8;
+        */
         let cfg = RuntimeManagerConfig {
             tokio_configs: HashMap::from([
                 ("tokio1".into(), tokio_cfg_1),
@@ -214,6 +226,7 @@ mod tests {
         }
         let tok1 = rtm.get_tokio("axum1").unwrap();
         let tok2 = rtm.get_tokio("axum2").unwrap();
+        let wrk_cores: Vec<_> = (32..64).collect();
         std::thread::scope(|s| {
             s.spawn(|| {
                 tok1.start(axum_main(8888));
@@ -222,7 +235,7 @@ mod tests {
                 tok2.start(axum_main(8889));
             });
             s.spawn(|| {
-                run_wrk(&[8888, 8889], &[4, 5, 6, 7, 8], 4, 300).unwrap();
+                run_wrk(&[8888, 8889], &wrk_cores, wrk_cores.len(), 1000).unwrap();
             });
         });
     }
