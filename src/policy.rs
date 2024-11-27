@@ -1,8 +1,17 @@
+use std::default;
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub enum CoreAllocation {
-    PinnedCores { min: usize, max: usize },
-    DedicatedCoreSet { min: usize, max: usize },
+    #[default]
     OsDefault,
+    PinnedCores {
+        min: usize,
+        max: usize,
+    },
+    DedicatedCoreSet {
+        min: usize,
+        max: usize,
+    },
 }

@@ -1,4 +1,5 @@
 use affinity::*;
+use anyhow::Ok;
 use serde::{Deserialize, Serialize};
 use thread_priority::*;
 
@@ -20,7 +21,9 @@ pub use supported_runtimes::{NativeConfig, NativeThreadRuntime, TokioConfig, Tok
 pub struct RuntimeManager {
     pub tokio_runtimes: HashMap<ConstString, TokioRuntime>,
     pub tokio_runtime_mapping: HashMap<ConstString, ConstString>,
+
     pub native_thread_runtimes: HashMap<ConstString, NativeThreadRuntime>,
+    pub native_runtime_mapping: HashMap<ConstString, ConstString>,
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -28,21 +31,58 @@ pub struct RuntimeManager {
 pub struct RuntimeManagerConfig {
     pub tokio_configs: HashMap<String, TokioConfig>,
     pub tokio_runtime_mapping: HashMap<String, String>,
+    pub native_runtime_mapping: HashMap<String, String>,
     pub native_configs: HashMap<String, NativeConfig>,
+    pub default_core_allocation: CoreAllocation,
 }
 
 impl RuntimeManager {
+    pub fn get_native(&self, name: &str) -> Option<&NativeThreadRuntime> {
+        let n = self.native_runtime_mapping.get(name)?;
+        self.native_thread_runtimes.get(n)
+    }
     pub fn get_tokio(&self, name: &str) -> Option<&TokioRuntime> {
         let n = self.tokio_runtime_mapping.get(name)?;
         self.tokio_runtimes.get(n)
     }
+    pub fn set_process_affinity(config: &RuntimeManagerConfig) -> anyhow::Result<Vec<usize>> {
+        let chosen_cores_mask: Vec<usize> = {
+            match config.default_core_allocation {
+                CoreAllocation::PinnedCores { min, max } => (min..max).collect(),
+                CoreAllocation::DedicatedCoreSet { min, max } => (min..max).collect(),
+                CoreAllocation::OsDefault => vec![],
+            }
+        };
+
+        match set_thread_affinity(&chosen_cores_mask) {
+            Err(e) => anyhow::bail!(e.to_string()),
+            _ => {}
+        }
+        Ok(chosen_cores_mask)
+    }
+
     pub fn new(config: RuntimeManagerConfig) -> anyhow::Result<Self> {
         let mut core_allocations = HashMap::<ConstString, Vec<usize>>::new();
+        Self::set_process_affinity(&config)?;
         let mut manager = Self::default();
+
+        //TODO: this should probably be cleaned up at some point...
         for (k, v) in config.tokio_runtime_mapping.iter() {
             manager
                 .tokio_runtime_mapping
                 .insert(k.clone().into_boxed_str(), v.clone().into_boxed_str());
+        }
+        for (k, v) in config.native_runtime_mapping.iter() {
+            manager
+                .native_runtime_mapping
+                .insert(k.clone().into_boxed_str(), v.clone().into_boxed_str());
+        }
+
+        for (name, cfg) in config.native_configs.iter() {
+            let nrt = NativeThreadRuntime::new(cfg.clone());
+            manager
+                .native_thread_runtimes
+                .insert(name.clone().into_boxed_str(), nrt);
         }
 
         for (name, cfg) in config.tokio_configs.iter() {
@@ -65,7 +105,7 @@ impl RuntimeManager {
             let base_name = name.clone();
             println!(
                 "Assigning {:?} to runtime {}",
-                &core_allocations, &base_name
+                &chosen_cores_mask, &base_name
             );
             let mut builder = match num_workers {
                 1 => tokio::runtime::Builder::new_current_thread(),
@@ -92,7 +132,7 @@ impl RuntimeManager {
             let chosen_cores_mask = Mutex::new(chosen_cores_mask);
             builder.on_thread_start(move || {
                 let cur_thread = std::thread::current();
-                let tid = cur_thread
+                let _tid = cur_thread
                     .get_native_id()
                     .expect("Can not get thread id for newly created thread");
                 let tname = cur_thread.name().unwrap();
@@ -134,5 +174,57 @@ impl RuntimeManager {
             );
         }
         Ok(manager)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::{CoreAllocation, NativeConfig, RuntimeManager, RuntimeManagerConfig};
+
+    #[test]
+    fn process_affinity() {
+        let conf = RuntimeManagerConfig {
+            native_configs: HashMap::from([(
+                "pool1".to_owned(),
+                NativeConfig {
+                    core_allocation: CoreAllocation::DedicatedCoreSet { min: 0, max: 4 },
+                    max_threads: 5,
+                    priority: 0,
+                    ..Default::default()
+                },
+            )]),
+            default_core_allocation: CoreAllocation::DedicatedCoreSet { min: 4, max: 8 },
+            native_runtime_mapping: HashMap::from([("test".to_owned(), "pool1".to_owned())]),
+            ..Default::default()
+        };
+
+        let rtm = RuntimeManager::new(conf).unwrap();
+        let r = rtm.get_native("test").unwrap();
+
+        let t2 = r
+            .spawn(|| {
+                let aff = affinity::get_thread_affinity().unwrap();
+                assert_eq!(aff, [0, 1, 2, 3], "Managed thread allocation should be 0-3");
+            })
+            .unwrap();
+
+        let t = std::thread::spawn(|| {
+            let aff = affinity::get_thread_affinity().unwrap();
+            assert_eq!(aff, [4, 5, 6, 7], "Default thread allocation should be 4-7");
+
+            let tt = std::thread::spawn(|| {
+                let aff = affinity::get_thread_affinity().unwrap();
+                assert_eq!(
+                    aff,
+                    [4, 5, 6, 7],
+                    "Nested thread allocation should still be 4-7"
+                );
+            });
+            tt.join().unwrap();
+        });
+        t.join().unwrap();
+        t2.join().unwrap();
     }
 }
